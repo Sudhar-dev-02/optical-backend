@@ -59,11 +59,18 @@ const billSchema = new mongoose.Schema({
   // Financial Calculations
   totalAmount: { type: Number, default: 1500 },
   discountAmount: { type: Number, default: 100 },
+  referralDiscount: { type: Number, default: 0 },
   netAmount: { type: Number, default: 1400 },
   payMode: { type: String, enum: ['CASH', 'CARD', 'UPI', 'ONLINE', 'BANK_TRANSFER'], default: 'CASH' },
   onlinePayAmount: { type: Number, default: 0 },
   advanceAmount: { type: Number, default: 1000 },
   balanceAmount: { type: Number, default: 400 },
+  
+  // Wallet & Referral Tracking
+  referrerMrd: { type: String, default: '' },
+  referrerName: { type: String, default: '' },
+  walletRedeemed: { type: Number, default: 0 },
+  cashbackEarned: { type: Number, default: 0 },
 
   // Logistics
   deliveryDate: { type: Date },

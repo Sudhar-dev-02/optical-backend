@@ -10,6 +10,7 @@ dotenv.config();
 const connectDB = require('./config/db');
 const billRoutes = require('./routes/billRoutes');
 const catalogRoutes = require('./routes/catalogRoutes');
+const customerRoutes = require('./routes/customerRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -21,6 +22,7 @@ app.use(express.json());
 // Routes
 app.use('/api/bills', billRoutes);
 app.use('/api/catalog', catalogRoutes);
+app.use('/api/customers', customerRoutes);
 
 // Health Check
 app.get('/api/health', (req, res) => {

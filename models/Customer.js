@@ -7,7 +7,17 @@ const customerSchema = new mongoose.Schema({
   address: { type: String, default: '' },
   age: { type: Number, default: 0 },
   gender: { type: String, enum: ['Male', 'Female', 'Other'], default: 'Male' },
-  orderTakenBy: { type: String, default: 'babu' }
+  orderTakenBy: { type: String, default: 'babu' },
+  walletBalance: { type: Number, default: 0 },
+  referredByMrd: { type: String, default: '' },
+  referralCount: { type: Number, default: 0 },
+  walletHistory: [{
+    amount: Number,
+    type: { type: String, enum: ['EARNED', 'REDEEMED', 'REFERRAL_BONUS'] },
+    billNo: Number,
+    note: String,
+    date: { type: Date, default: Date.now }
+  }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Customer', customerSchema);

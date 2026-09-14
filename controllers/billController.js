@@ -195,6 +195,10 @@ exports.getBillById = async (req, res) => {
 exports.createBill = async (req, res) => {
   try {
     const billData = req.body;
+    const net = Number(billData.netAmount) || 0;
+    const cashback = Math.round(net * 0.10); // 10% Cashback in Rupees
+    const redeemed = Number(billData.walletRedeemed) || 0;
+    billData.cashbackEarned = cashback;
     
     if (isMongoConnected()) {
       // Auto-assign bill number if not provided
@@ -206,20 +210,66 @@ exports.createBill = async (req, res) => {
       const newBill = new Bill(billData);
       await newBill.save();
 
-      // Upsert Customer
+      // Upsert Purchasing Customer & Update Wallet Balance
       if (billData.customer && billData.customer.phone) {
+        const existingCust = await Customer.findOne({ phone: billData.customer.phone });
+        let currentBal = existingCust ? (existingCust.walletBalance || 0) : 0;
+        let newBal = Math.max(0, currentBal - redeemed + cashback);
+
+        const historyItem = {
+          amount: cashback,
+          type: 'EARNED',
+          billNo: newBill.billNo,
+          note: `10% Cashback (₹${cashback}) earned on Bill #${newBill.billNo}`,
+          date: new Date()
+        };
+
+        const updatePayload = { 
+          name: billData.customer.name,
+          phone: billData.customer.phone,
+          address: billData.customer.address,
+          age: billData.customer.age,
+          gender: billData.customer.gender,
+          mrdNo: billData.customer.mrdNo,
+          walletBalance: newBal
+        };
+
+        if (billData.referrerMrd) {
+          updatePayload.referredByMrd = billData.referrerMrd;
+        }
+
         await Customer.findOneAndUpdate(
           { phone: billData.customer.phone },
           { 
-            name: billData.customer.name,
-            phone: billData.customer.phone,
-            address: billData.customer.address,
-            age: billData.customer.age,
-            gender: billData.customer.gender,
-            mrdNo: billData.customer.mrdNo
+            $set: updatePayload,
+            $push: { walletHistory: historyItem }
           },
           { upsert: true, new: true }
         );
+
+        // Process Referrer Bonus Cashback if referred
+        if (billData.referrerMrd) {
+          const referrerBonus = Math.round(net * 0.10); // 10% bonus rupees to referrer
+          const referrerCust = await Customer.findOne({
+            $or: [
+              { mrdNo: billData.referrerMrd.trim() },
+              { phone: billData.referrerMrd.trim() }
+            ]
+          });
+
+          if (referrerCust) {
+            referrerCust.walletBalance = (referrerCust.walletBalance || 0) + referrerBonus;
+            referrerCust.referralCount = (referrerCust.referralCount || 0) + 1;
+            referrerCust.walletHistory.push({
+              amount: referrerBonus,
+              type: 'REFERRAL_BONUS',
+              billNo: newBill.billNo,
+              note: `Referral Bonus (₹${referrerBonus}) from ${billData.customer.name}'s purchase (Bill #${newBill.billNo})`,
+              date: new Date()
+            });
+            await referrerCust.save();
+          }
+        }
       }
 
       return res.status(201).json(newBill);
