@@ -46,21 +46,29 @@ exports.lookupCustomer = async (req, res) => {
     const cleanNum = q.replace(/^0+/, ''); // e.g. "00480" -> "480"
 
     if (isMongoConnected()) {
+      // 1. Try exact/padded MRD match first
       let customer = await Customer.findOne({
-        $or: [
-          { mrdNo: { $regex: new RegExp(`^0*${cleanNum}$`, 'i') } },
-          { phone: { $regex: new RegExp(q, 'i') } }
-        ]
+        mrdNo: { $regex: new RegExp(`^0*${cleanNum}$`, 'i') }
       });
+
+      // 2. If no MRD match and query is 7+ digits, try phone lookup
+      if (!customer && q.length >= 7) {
+        customer = await Customer.findOne({
+          phone: { $regex: new RegExp(q, 'i') }
+        });
+      }
 
       if (!customer) {
         // Fallback: search Bill collection for customer details
-        const bill = await Bill.findOne({
-          $or: [
-            { 'customer.mrdNo': { $regex: new RegExp(`^0*${cleanNum}$`, 'i') } },
-            { 'customer.phone': { $regex: new RegExp(q, 'i') } }
-          ]
+        let bill = await Bill.findOne({
+          'customer.mrdNo': { $regex: new RegExp(`^0*${cleanNum}$`, 'i') }
         });
+
+        if (!bill && q.length >= 7) {
+          bill = await Bill.findOne({
+            'customer.phone': { $regex: new RegExp(q, 'i') }
+          });
+        }
 
         if (bill && bill.customer) {
           customer = {
@@ -74,18 +82,23 @@ exports.lookupCustomer = async (req, res) => {
       }
 
       if (!customer) {
-        return res.status(404).json({ message: 'No customer profile found with this MRD No or Phone.' });
+        return res.json(null);
       }
 
       return res.json(customer);
     } else {
+      // In-Memory lookup: MRD first, phone only if 7+ digits
       let customer = inMemoryCustomers.find(c => {
         const cMrd = (c.mrdNo || '').toLowerCase().replace(/^0+/, '');
-        return (cMrd && cMrd === cleanNum) || (c.phone && c.phone.includes(q));
+        return cMrd && cMrd === cleanNum;
       });
 
+      if (!customer && q.length >= 7) {
+        customer = inMemoryCustomers.find(c => c.phone && c.phone.includes(q));
+      }
+
       if (!customer) {
-        return res.status(404).json({ message: 'No customer profile found with this MRD No or Phone.' });
+        return res.json(null);
       }
 
       return res.json(customer);
@@ -95,9 +108,32 @@ exports.lookupCustomer = async (req, res) => {
   }
 };
 
-// Get All Customers with Wallet Balances
+// Get All Customers or Search by query (?query=...)
 exports.getCustomers = async (req, res) => {
   try {
+    const { query, search } = req.query;
+    const q = (query || search || '').trim().toLowerCase();
+
+    if (q) {
+      const cleanNum = q.replace(/^0+/, '');
+      if (isMongoConnected()) {
+        let match = await Customer.findOne({ mrdNo: { $regex: new RegExp(`^0*${cleanNum}$`, 'i') } });
+        if (!match && q.length >= 7) {
+          match = await Customer.findOne({ phone: { $regex: new RegExp(q, 'i') } });
+        }
+        return res.json(match ? [match] : []);
+      } else {
+        let match = inMemoryCustomers.find(c => {
+          const cMrd = (c.mrdNo || '').toLowerCase().replace(/^0+/, '');
+          return cMrd && cMrd === cleanNum;
+        });
+        if (!match && q.length >= 7) {
+          match = inMemoryCustomers.find(c => c.phone && c.phone.includes(q));
+        }
+        return res.json(match ? [match] : []);
+      }
+    }
+
     if (isMongoConnected()) {
       const customers = await Customer.find().sort({ createdAt: -1 });
       return res.json(customers);

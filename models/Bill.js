@@ -68,6 +68,7 @@ const billSchema = new mongoose.Schema({
   
   // Wallet & Referral Tracking
   referrerMrd: { type: String, default: '' },
+  referrerPhone: { type: String, default: '' },
   referrerName: { type: String, default: '' },
   walletRedeemed: { type: Number, default: 0 },
   cashbackEarned: { type: Number, default: 0 },
