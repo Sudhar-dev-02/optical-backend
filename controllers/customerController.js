@@ -71,12 +71,34 @@ exports.lookupCustomer = async (req, res) => {
         }
 
         if (bill && bill.customer) {
+          const custMrd = bill.customer.mrdNo || '';
+          const custPhone = bill.customer.phone || '';
+          const custBills = await Bill.find({
+            $or: [
+              { 'customer.mrdNo': custMrd },
+              { 'customer.phone': custPhone }
+            ]
+          });
+          let bal = 0;
+          custBills.forEach(b => {
+            bal += (Number(b.cashbackEarned) || 0) - (Number(b.walletRedeemed) || 0);
+          });
+          const refBills = await Bill.find({
+            $or: [
+              { referrerMrd: custMrd },
+              { referrerPhone: custPhone }
+            ]
+          });
+          refBills.forEach(b => {
+            bal += Math.round((Number(b.netAmount) || 0) * 0.10);
+          });
+
           customer = {
             mrdNo: bill.customer.mrdNo,
             name: bill.customer.name,
             phone: bill.customer.phone,
             address: bill.customer.address,
-            walletBalance: 280
+            walletBalance: Math.max(0, bal)
           };
         }
       }
