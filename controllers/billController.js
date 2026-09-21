@@ -196,7 +196,7 @@ exports.createBill = async (req, res) => {
   try {
     const billData = req.body;
     const net = Number(billData.netAmount) || 0;
-    const cashback = Math.round(net * 0.10); // 10% Cashback in Rupees
+    const cashback = billData.cashbackEarned !== undefined ? Number(billData.cashbackEarned) : Math.round(net * 0.10);
     const redeemed = Number(billData.walletRedeemed) || 0;
     billData.cashbackEarned = cashback;
     
