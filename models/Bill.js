@@ -78,6 +78,15 @@ const billSchema = new mongoose.Schema({
   reminderDate: { type: Date },
   deliveryStatus: { type: String, enum: ['Pending', 'Ready', 'Delivered'], default: 'Pending' },
 
+  // Follow-Up Tracking
+  followUpStatus: { type: String, enum: ['Pending', 'Sent', 'Contacted', 'Completed'], default: 'Pending' },
+  followUpDetails: {
+    serviceSentAt: { type: Date },
+    feedbackSentAt: { type: Date },
+    eyeCheckSentAt: { type: Date },
+    lastContactedAt: { type: Date }
+  },
+
   smsSent: { type: Boolean, default: false }
 }, { timestamps: true });
 

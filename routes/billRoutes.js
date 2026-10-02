@@ -10,6 +10,8 @@ router.post('/', billController.createBill);
 router.put('/:id', billController.updateBill);
 router.delete('/:id', billController.deleteBill);
 router.patch('/:id/delivery', billController.updateDeliveryStatus);
+router.patch('/:id/followup', billController.updateFollowUpStatus);
+router.patch('/:id/toggle-sms', billController.toggleReminderSent);
 router.post('/:id/send-sms', billController.sendSMS);
 
 module.exports = router;

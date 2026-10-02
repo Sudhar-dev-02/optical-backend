@@ -361,13 +361,89 @@ exports.sendSMS = async (req, res) => {
     const { id } = req.params;
     // Mock SMS integration response
     if (isMongoConnected()) {
-      await Bill.findByIdAndUpdate(id, { smsSent: true });
+      if (mongoose.Types.ObjectId.isValid(id)) {
+        await Bill.findByIdAndUpdate(id, { smsSent: true });
+      } else {
+        await Bill.findOneAndUpdate({ billNo: Number(id) }, { smsSent: true });
+      }
     } else {
       const bill = inMemoryBills.find(b => b._id === id || b.billNo === Number(id));
       if (bill) bill.smsSent = true;
     }
-    return res.json({ success: true, message: 'SMS notification dispatched to customer phone.' });
+    return res.json({ success: true, message: 'SMS/WhatsApp notification marked as dispatched.' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
+
+// Toggle/Update Reminder & SMS Sent Status
+exports.toggleReminderSent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { sent } = req.body;
+
+    if (isMongoConnected()) {
+      const bill = mongoose.Types.ObjectId.isValid(id)
+        ? await Bill.findById(id)
+        : await Bill.findOne({ billNo: Number(id) });
+      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+
+      bill.smsSent = sent !== undefined ? Boolean(sent) : !bill.smsSent;
+      await bill.save();
+      return res.json(bill);
+    } else {
+      const bill = inMemoryBills.find(b => b._id === id || b.billNo === Number(id));
+      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+      bill.smsSent = sent !== undefined ? Boolean(sent) : !bill.smsSent;
+      return res.json(bill);
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Update Follow-Up Status & Timestamps
+exports.updateFollowUpStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status = 'Sent', type } = req.body;
+    const now = new Date();
+
+    const updateFields = {
+      followUpStatus: status,
+      'followUpDetails.lastContactedAt': now
+    };
+
+    if (type === 'service') {
+      updateFields['followUpDetails.serviceSentAt'] = now;
+    } else if (type === 'feedback') {
+      updateFields['followUpDetails.feedbackSentAt'] = now;
+    } else if (type === 'eyecheck') {
+      updateFields['followUpDetails.eyeCheckSentAt'] = now;
+    }
+
+    if (isMongoConnected()) {
+      const updated = mongoose.Types.ObjectId.isValid(id)
+        ? await Bill.findByIdAndUpdate(id, { $set: updateFields }, { new: true })
+        : await Bill.findOneAndUpdate({ billNo: Number(id) }, { $set: updateFields }, { new: true });
+
+      if (!updated) return res.status(404).json({ message: 'Bill not found' });
+      return res.json(updated);
+    } else {
+      const bill = inMemoryBills.find(b => b._id === id || b.billNo === Number(id));
+      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+
+      bill.followUpStatus = status;
+      if (!bill.followUpDetails) bill.followUpDetails = {};
+      bill.followUpDetails.lastContactedAt = now;
+      if (type === 'service') bill.followUpDetails.serviceSentAt = now;
+      if (type === 'feedback') bill.followUpDetails.feedbackSentAt = now;
+      if (type === 'eyecheck') bill.followUpDetails.eyeCheckSentAt = now;
+
+      return res.json(bill);
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
