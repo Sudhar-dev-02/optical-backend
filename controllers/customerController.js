@@ -17,7 +17,7 @@ let inMemoryCustomers = [
     walletBalance: 280,
     referralCount: 1,
     walletHistory: [
-      { amount: 280, type: 'EARNED', billNo: 6852, note: '10% Cashback on Bill #6852', date: new Date() }
+      { amount: 280, type: 'EARNED', billNo: '001', note: '10% Cashback on Bill #001', date: new Date() }
     ]
   },
   {

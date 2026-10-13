@@ -14,7 +14,7 @@ const customerSchema = new mongoose.Schema({
   walletHistory: [{
     amount: Number,
     type: { type: String, enum: ['EARNED', 'REDEEMED', 'REFERRAL_BONUS'] },
-    billNo: Number,
+    billNo: { type: mongoose.Schema.Types.Mixed },
     note: String,
     date: { type: Date, default: Date.now }
   }]

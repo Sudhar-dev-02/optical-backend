@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const billSchema = new mongoose.Schema({
-  billNo: { type: Number, required: true, unique: true, index: true },
+  billNo: { type: String, required: true, unique: true, index: true },
   entryType: { type: String, enum: ['New', 'Repeat', 'Warranty'], default: 'New' },
   date: { type: Date, default: Date.now },
   
@@ -89,5 +89,16 @@ const billSchema = new mongoose.Schema({
 
   smsSent: { type: Boolean, default: false }
 }, { timestamps: true });
+
+// Ensure continuous 3-digit serial format (e.g., 001, 002... 010... 999, 1000...)
+billSchema.pre('save', function (next) {
+  if (this.billNo !== undefined && this.billNo !== null) {
+    const num = parseInt(String(this.billNo).replace(/\D/g, ''), 10);
+    if (!isNaN(num) && num > 0) {
+      this.billNo = String(num).padStart(3, '0');
+    }
+  }
+  next();
+});
 
 module.exports = mongoose.model('Bill', billSchema);
