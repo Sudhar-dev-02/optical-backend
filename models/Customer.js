@@ -20,4 +20,8 @@ const customerSchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
+// Query performance indexes for customer and referral lookups
+customerSchema.index({ mrdNo: 1 });
+customerSchema.index({ phone: 1, mrdNo: 1 });
+
 module.exports = mongoose.model('Customer', customerSchema);

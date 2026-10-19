@@ -1,6 +1,7 @@
 const Bill = require('../models/Bill');
 const Customer = require('../models/Customer');
 const mongoose = require('mongoose');
+const { escapeRegExp } = require('../middleware/validate');
 
 // Helper to format bill numbers into continuous serial string (e.g. 001, 002, ... 010 ... 999, 1000 ... 2000)
 const formatBillNo = (val) => {
@@ -16,21 +17,50 @@ const parseBillNo = (val) => {
   return isNaN(num) ? 0 : num;
 };
 
-// In-Memory fallback store for demo & fallback when Mongo DB is offline
+// In-Memory fallback store for demo & fallback when MongoDB is offline
 let inMemoryBills = [];
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
 
+/**
+ * Optimized helper to compute the maximum bill number in database
+ * Runs atomic database aggregation instead of pulling all records into memory
+ */
+const getDatabaseMaxBillNo = async () => {
+  try {
+    const result = await Bill.aggregate([
+      {
+        $group: {
+          _id: null,
+          maxNo: {
+            $max: {
+              $convert: { input: '$billNo', to: 'int', onError: 0, onNull: 0 }
+            }
+          }
+        }
+      }
+    ]);
+    return (result && result[0] && result[0].maxNo) ? result[0].maxNo : 0;
+  } catch (err) {
+    // Fallback: fetch recent bills with limit
+    const recent = await Bill.find({}, { billNo: 1 })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+    let maxNo = 0;
+    recent.forEach(b => {
+      const num = parseBillNo(b.billNo);
+      if (num > maxNo) maxNo = num;
+    });
+    return maxNo;
+  }
+};
+
 // Get Next Auto Bill Number (001, 002, 003... 010... 999, 1000... 2000)
-exports.getNextBillNo = async (req, res) => {
+exports.getNextBillNo = async (req, res, next) => {
   try {
     if (isMongoConnected()) {
-      const bills = await Bill.find({}, 'billNo');
-      let maxNo = 0;
-      bills.forEach(b => {
-        const num = parseBillNo(b.billNo);
-        if (num > maxNo) maxNo = num;
-      });
+      const maxNo = await getDatabaseMaxBillNo();
       const nextNum = maxNo + 1;
       const formatted = String(nextNum).padStart(3, '0');
       return res.json({ nextBillNo: formatted, nextBillNum: nextNum });
@@ -45,18 +75,21 @@ exports.getNextBillNo = async (req, res) => {
       return res.json({ nextBillNo: formatted, nextBillNum: nextNum });
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
-// Get All Bills with Search Filter
-exports.getBills = async (req, res) => {
+// Get All Bills with Search Filter, Lean hydration, and Safe Regex
+exports.getBills = async (req, res, next) => {
   try {
-    const { query } = req.query;
+    const { query, limit = 2000 } = req.query;
+    const maxLimit = Math.min(Math.max(1, parseInt(limit, 10) || 1000), 5000);
+
     if (isMongoConnected()) {
       let filter = {};
-      if (query) {
-        const regex = new RegExp(query, 'i');
+      if (query && String(query).trim()) {
+        const sanitized = escapeRegExp(String(query).trim());
+        const regex = new RegExp(sanitized, 'i');
         const numQuery = parseInt(query, 10);
         const formattedQuery = !isNaN(numQuery) ? String(numQuery).padStart(3, '0') : null;
         filter = {
@@ -70,18 +103,23 @@ exports.getBills = async (req, res) => {
           ]
         };
       }
-      const bills = await Bill.find(filter);
+
+      const bills = await Bill.find(filter)
+        .limit(maxLimit)
+        .lean();
+
       // Sort numerically by billNo descending
       bills.sort((a, b) => {
         const numA = parseBillNo(a.billNo);
         const numB = parseBillNo(b.billNo);
         return numB - numA;
       });
+
       return res.json(bills);
     } else {
       let filtered = [...inMemoryBills];
-      if (query) {
-        const q = query.toLowerCase();
+      if (query && String(query).trim()) {
+        const q = String(query).trim().toLowerCase();
         filtered = filtered.filter(b => 
           (b.customer?.name && b.customer.name.toLowerCase().includes(q)) ||
           (b.customer?.phone && b.customer.phone.includes(q)) ||
@@ -90,15 +128,15 @@ exports.getBills = async (req, res) => {
         );
       }
       filtered.sort((a, b) => parseBillNo(b.billNo) - parseBillNo(a.billNo));
-      return res.json(filtered);
+      return res.json(filtered.slice(0, maxLimit));
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 // Get Single Bill by ID or Bill Number
-exports.getBillById = async (req, res) => {
+exports.getBillById = async (req, res, next) => {
   try {
     const { id } = req.params;
     const num = parseInt(String(id).replace(/\D/g, ''), 10);
@@ -107,7 +145,7 @@ exports.getBillById = async (req, res) => {
     if (isMongoConnected()) {
       let bill = null;
       if (mongoose.Types.ObjectId.isValid(id)) {
-        bill = await Bill.findById(id);
+        bill = await Bill.findById(id).lean();
       }
       if (!bill) {
         bill = await Bill.findOne({
@@ -116,9 +154,9 @@ exports.getBillById = async (req, res) => {
             ...(formatted ? [{ billNo: formatted }] : []),
             ...(isNaN(num) ? [] : [{ billNo: num }])
           ]
-        });
+        }).lean();
       }
-      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+      if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
       return res.json(bill);
     } else {
       const bill = inMemoryBills.find(b => 
@@ -127,16 +165,16 @@ exports.getBillById = async (req, res) => {
         (formatted && String(b.billNo) === formatted) || 
         (!isNaN(num) && parseBillNo(b.billNo) === num)
       );
-      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+      if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
       return res.json(bill);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
-// Create New Bill
-exports.createBill = async (req, res) => {
+// Create New Bill with Atomic Updates & Race-Condition Safeguards
+exports.createBill = async (req, res, next) => {
   try {
     const billData = req.body;
     const net = Number(billData.netAmount) || 0;
@@ -147,26 +185,17 @@ exports.createBill = async (req, res) => {
     if (isMongoConnected()) {
       // Auto-assign continuous bill number starting from 001 if not provided
       if (!billData.billNo) {
-        const bills = await Bill.find({}, 'billNo');
-        let maxNo = 0;
-        bills.forEach(b => {
-          const num = parseBillNo(b.billNo);
-          if (num > maxNo) maxNo = num;
-        });
+        const maxNo = await getDatabaseMaxBillNo();
         billData.billNo = String(maxNo + 1).padStart(3, '0');
       } else {
         billData.billNo = formatBillNo(billData.billNo);
       }
-      
+
       const newBill = new Bill(billData);
       await newBill.save();
 
       // Upsert Purchasing Customer & Update Wallet Balance
       if (billData.customer && billData.customer.phone) {
-        const existingCust = await Customer.findOne({ phone: billData.customer.phone });
-        let currentBal = existingCust ? (existingCust.walletBalance || 0) : 0;
-        let newBal = Math.max(0, currentBal - redeemed + cashback);
-
         const historyItem = {
           amount: cashback,
           type: 'EARNED',
@@ -181,13 +210,18 @@ exports.createBill = async (req, res) => {
           address: billData.customer.address,
           age: billData.customer.age,
           gender: billData.customer.gender,
-          mrdNo: billData.customer.mrdNo,
-          walletBalance: newBal
+          mrdNo: billData.customer.mrdNo
         };
 
         if (billData.referrerMrd) {
           updatePayload.referredByMrd = billData.referrerMrd;
         }
+
+        // Fetch existing customer to calculate non-negative balance securely
+        const existingCust = await Customer.findOne({ phone: billData.customer.phone }).lean();
+        const currentBal = existingCust ? (existingCust.walletBalance || 0) : 0;
+        const newBal = Math.max(0, currentBal - redeemed + cashback);
+        updatePayload.walletBalance = newBal;
 
         await Customer.findOneAndUpdate(
           { phone: billData.customer.phone },
@@ -198,28 +232,31 @@ exports.createBill = async (req, res) => {
           { upsert: true, new: true }
         );
 
-        // Process Referrer Bonus Cashback if referred
-        if (billData.referrerMrd) {
-          const referrerBonus = Math.round(net * 0.10); // 10% bonus rupees to referrer
-          const referrerCust = await Customer.findOne({
-            $or: [
-              { mrdNo: billData.referrerMrd.trim() },
-              { phone: billData.referrerMrd.trim() }
-            ]
-          });
-
-          if (referrerCust) {
-            referrerCust.walletBalance = (referrerCust.walletBalance || 0) + referrerBonus;
-            referrerCust.referralCount = (referrerCust.referralCount || 0) + 1;
-            referrerCust.walletHistory.push({
-              amount: referrerBonus,
-              type: 'REFERRAL_BONUS',
-              billNo: newBill.billNo,
-              note: `Referral Bonus (₹${referrerBonus}) from ${billData.customer.name}'s purchase (Bill #${newBill.billNo})`,
-              date: new Date()
-            });
-            await referrerCust.save();
-          }
+        // Process Referrer Bonus Cashback if referred using ATOMIC $inc and $push
+        if (billData.referrerMrd && String(billData.referrerMrd).trim()) {
+          const referrerBonus = Math.round(net * 0.10);
+          const trimmedRef = String(billData.referrerMrd).trim();
+          
+          await Customer.findOneAndUpdate(
+            {
+              $or: [
+                { mrdNo: trimmedRef },
+                { phone: trimmedRef }
+              ]
+            },
+            {
+              $inc: { walletBalance: referrerBonus, referralCount: 1 },
+              $push: {
+                walletHistory: {
+                  amount: referrerBonus,
+                  type: 'REFERRAL_BONUS',
+                  billNo: newBill.billNo,
+                  note: `Referral Bonus (₹${referrerBonus}) from ${billData.customer.name}'s purchase (Bill #${newBill.billNo})`,
+                  date: new Date()
+                }
+              }
+            }
+          );
         }
       }
 
@@ -242,12 +279,12 @@ exports.createBill = async (req, res) => {
       return res.status(201).json(newBill);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 // Update Bill
-exports.updateBill = async (req, res) => {
+exports.updateBill = async (req, res, next) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
@@ -272,7 +309,7 @@ exports.updateBill = async (req, res) => {
           ]
         }, updateData, { new: true });
       }
-      if (!updated) return res.status(404).json({ message: 'Bill not found' });
+      if (!updated) return res.status(404).json({ success: false, message: 'Bill not found' });
       return res.json(updated);
     } else {
       const index = inMemoryBills.findIndex(b => 
@@ -281,17 +318,17 @@ exports.updateBill = async (req, res) => {
         (formatted && String(b.billNo) === formatted) || 
         (!isNaN(num) && parseBillNo(b.billNo) === num)
       );
-      if (index === -1) return res.status(404).json({ message: 'Bill not found' });
+      if (index === -1) return res.status(404).json({ success: false, message: 'Bill not found' });
       inMemoryBills[index] = { ...inMemoryBills[index], ...updateData };
       return res.json(inMemoryBills[index]);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 // Delete Bill
-exports.deleteBill = async (req, res) => {
+exports.deleteBill = async (req, res, next) => {
   try {
     const { id } = req.params;
     const num = parseInt(String(id).replace(/\D/g, ''), 10);
@@ -311,8 +348,8 @@ exports.deleteBill = async (req, res) => {
           ]
         });
       }
-      if (!deleted) return res.status(404).json({ message: 'Bill not found' });
-      return res.json({ message: 'Bill deleted successfully' });
+      if (!deleted) return res.status(404).json({ success: false, message: 'Bill not found' });
+      return res.json({ success: true, message: 'Bill deleted successfully' });
     } else {
       const index = inMemoryBills.findIndex(b => 
         b._id === id || 
@@ -320,24 +357,27 @@ exports.deleteBill = async (req, res) => {
         (formatted && String(b.billNo) === formatted) || 
         (!isNaN(num) && parseBillNo(b.billNo) === num)
       );
-      if (index === -1) return res.status(404).json({ message: 'Bill not found' });
+      if (index === -1) return res.status(404).json({ success: false, message: 'Bill not found' });
       inMemoryBills.splice(index, 1);
-      return res.json({ message: 'Bill deleted successfully' });
+      return res.json({ success: true, message: 'Bill deleted successfully' });
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 // Toggle Delivery Status & Settlement
-exports.updateDeliveryStatus = async (req, res) => {
+exports.updateDeliveryStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { status, advanceAmount, balanceAmount, payMode } = req.body;
+    const { status, advanceAmount, balanceAmount, payMode, deliveryAmount, deliveryDate } = req.body;
 
-    const updateFields = { deliveryStatus: status };
+    const updateFields = {};
+    if (status !== undefined) updateFields.deliveryStatus = status;
     if (advanceAmount !== undefined) updateFields.advanceAmount = Number(advanceAmount);
     if (balanceAmount !== undefined) updateFields.balanceAmount = Number(balanceAmount);
+    if (deliveryAmount !== undefined) updateFields.deliveryAmount = Number(deliveryAmount);
+    if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
     if (payMode !== undefined) updateFields.payMode = payMode;
 
     const num = parseInt(String(id).replace(/\D/g, ''), 10);
@@ -357,6 +397,7 @@ exports.updateDeliveryStatus = async (req, res) => {
           ]
         }, updateFields, { new: true });
       }
+      if (!updated) return res.status(404).json({ success: false, message: 'Bill not found' });
       return res.json(updated);
     } else {
       const bill = inMemoryBills.find(b => 
@@ -365,17 +406,17 @@ exports.updateDeliveryStatus = async (req, res) => {
         (formatted && String(b.billNo) === formatted) || 
         (!isNaN(num) && parseBillNo(b.billNo) === num)
       );
-      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+      if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
       Object.assign(bill, updateFields);
       return res.json(bill);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 // Send SMS Notification
-exports.sendSMS = async (req, res) => {
+exports.sendSMS = async (req, res, next) => {
   try {
     const { id } = req.params;
     const num = parseInt(String(id).replace(/\D/g, ''), 10);
@@ -404,12 +445,12 @@ exports.sendSMS = async (req, res) => {
     }
     return res.json({ success: true, message: 'SMS/WhatsApp notification marked as dispatched.' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 // Toggle/Update Reminder & SMS Sent Status
-exports.toggleReminderSent = async (req, res) => {
+exports.toggleReminderSent = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { sent } = req.body;
@@ -430,7 +471,7 @@ exports.toggleReminderSent = async (req, res) => {
           ]
         });
       }
-      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+      if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
 
       bill.smsSent = sent !== undefined ? Boolean(sent) : !bill.smsSent;
       await bill.save();
@@ -442,17 +483,17 @@ exports.toggleReminderSent = async (req, res) => {
         (formatted && String(b.billNo) === formatted) || 
         (!isNaN(num) && parseBillNo(b.billNo) === num)
       );
-      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+      if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
       bill.smsSent = sent !== undefined ? Boolean(sent) : !bill.smsSent;
       return res.json(bill);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 // Update Follow-Up Status & Timestamps
-exports.updateFollowUpStatus = async (req, res) => {
+exports.updateFollowUpStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { status = 'Sent', type } = req.body;
@@ -489,7 +530,7 @@ exports.updateFollowUpStatus = async (req, res) => {
         }, { $set: updateFields }, { new: true });
       }
 
-      if (!updated) return res.status(404).json({ message: 'Bill not found' });
+      if (!updated) return res.status(404).json({ success: false, message: 'Bill not found' });
       return res.json(updated);
     } else {
       const bill = inMemoryBills.find(b => 
@@ -498,7 +539,7 @@ exports.updateFollowUpStatus = async (req, res) => {
         (formatted && String(b.billNo) === formatted) || 
         (!isNaN(num) && parseBillNo(b.billNo) === num)
       );
-      if (!bill) return res.status(404).json({ message: 'Bill not found' });
+      if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
 
       bill.followUpStatus = status;
       if (!bill.followUpDetails) bill.followUpDetails = {};
@@ -510,6 +551,6 @@ exports.updateFollowUpStatus = async (req, res) => {
       return res.json(bill);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };

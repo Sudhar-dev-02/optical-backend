@@ -77,6 +77,7 @@ const billSchema = new mongoose.Schema({
   deliveryDate: { type: Date },
   reminderDate: { type: Date },
   deliveryStatus: { type: String, enum: ['Pending', 'Ready', 'Delivered'], default: 'Pending' },
+  deliveryAmount: { type: Number, default: 0 },
 
   // Follow-Up Tracking
   followUpStatus: { type: String, enum: ['Pending', 'Sent', 'Contacted', 'Completed'], default: 'Pending' },
@@ -100,5 +101,14 @@ billSchema.pre('save', function (next) {
   }
   next();
 });
+
+// Query performance indexes for high-throughput lookups and sorting
+billSchema.index({ 'customer.phone': 1 });
+billSchema.index({ 'customer.mrdNo': 1 });
+billSchema.index({ date: -1 });
+billSchema.index({ deliveryStatus: 1, date: -1 });
+billSchema.index({ followUpStatus: 1 });
+billSchema.index({ referrerMrd: 1 });
+billSchema.index({ referrerPhone: 1 });
 
 module.exports = mongoose.model('Bill', billSchema);

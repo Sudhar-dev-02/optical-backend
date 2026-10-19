@@ -18,10 +18,10 @@ let inMemoryCatalog = { ...defaultCatalog };
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
 
-exports.getCatalog = async (req, res) => {
+exports.getCatalog = async (req, res, next) => {
   try {
     if (isMongoConnected()) {
-      let catalog = await Catalog.findOne({ key: 'main_catalog' });
+      let catalog = await Catalog.findOne({ key: 'main_catalog' }).lean();
       if (!catalog) {
         catalog = new Catalog(defaultCatalog);
         await catalog.save();
@@ -31,11 +31,11 @@ exports.getCatalog = async (req, res) => {
       return res.json(inMemoryCatalog);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
-exports.updateCatalog = async (req, res) => {
+exports.updateCatalog = async (req, res, next) => {
   try {
     const updateData = req.body;
     if (isMongoConnected()) {
@@ -43,13 +43,13 @@ exports.updateCatalog = async (req, res) => {
         { key: 'main_catalog' },
         { $set: updateData },
         { new: true, upsert: true }
-      );
+      ).lean();
       return res.json(catalog);
     } else {
       inMemoryCatalog = { ...inMemoryCatalog, ...updateData };
       return res.json(inMemoryCatalog);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };

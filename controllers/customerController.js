@@ -1,5 +1,7 @@
 const Customer = require('../models/Customer');
+const Bill = require('../models/Bill');
 const mongoose = require('mongoose');
+const { escapeRegExp } = require('../middleware/validate');
 
 // Helper to check MongoDB connection
 const isMongoConnected = () => mongoose.connection.readyState === 1;
@@ -34,40 +36,40 @@ let inMemoryCustomers = [
   }
 ];
 
-const Bill = require('../models/Bill');
-
 // Lookup Customer by MRD No or Phone for Referral
-exports.lookupCustomer = async (req, res) => {
+exports.lookupCustomer = async (req, res, next) => {
   try {
     const { query } = req.params;
-    if (!query) return res.status(400).json({ message: 'Search query is required' });
+    if (!query) return res.status(400).json({ success: false, message: 'Search query is required' });
 
-    const q = query.trim().toLowerCase();
+    const q = String(query).trim().toLowerCase();
     const cleanNum = q.replace(/^0+/, ''); // e.g. "00480" -> "480"
+    const safeCleanNum = escapeRegExp(cleanNum);
+    const safeQ = escapeRegExp(q);
 
     if (isMongoConnected()) {
       // 1. Try exact/padded MRD match first
       let customer = await Customer.findOne({
-        mrdNo: { $regex: new RegExp(`^0*${cleanNum}$`, 'i') }
-      });
+        mrdNo: { $regex: new RegExp(`^0*${safeCleanNum}$`, 'i') }
+      }).lean();
 
       // 2. If no MRD match and query is 7+ digits, try phone lookup
       if (!customer && q.length >= 7) {
         customer = await Customer.findOne({
-          phone: { $regex: new RegExp(q, 'i') }
-        });
+          phone: { $regex: new RegExp(safeQ, 'i') }
+        }).lean();
       }
 
       if (!customer) {
         // Fallback: search Bill collection for customer details
         let bill = await Bill.findOne({
-          'customer.mrdNo': { $regex: new RegExp(`^0*${cleanNum}$`, 'i') }
-        });
+          'customer.mrdNo': { $regex: new RegExp(`^0*${safeCleanNum}$`, 'i') }
+        }).lean();
 
         if (!bill && q.length >= 7) {
           bill = await Bill.findOne({
-            'customer.phone': { $regex: new RegExp(q, 'i') }
-          });
+            'customer.phone': { $regex: new RegExp(safeQ, 'i') }
+          }).lean();
         }
 
         if (bill && bill.customer) {
@@ -78,17 +80,20 @@ exports.lookupCustomer = async (req, res) => {
               { 'customer.mrdNo': custMrd },
               { 'customer.phone': custPhone }
             ]
-          });
+          }, { cashbackEarned: 1, walletRedeemed: 1 }).lean();
+
           let bal = 0;
           custBills.forEach(b => {
             bal += (Number(b.cashbackEarned) || 0) - (Number(b.walletRedeemed) || 0);
           });
+
           const refBills = await Bill.find({
             $or: [
               { referrerMrd: custMrd },
               { referrerPhone: custPhone }
             ]
-          });
+          }, { netAmount: 1 }).lean();
+
           refBills.forEach(b => {
             bal += Math.round((Number(b.netAmount) || 0) * 0.10);
           });
@@ -126,22 +131,26 @@ exports.lookupCustomer = async (req, res) => {
       return res.json(customer);
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 // Get All Customers or Search by query (?query=...)
-exports.getCustomers = async (req, res) => {
+exports.getCustomers = async (req, res, next) => {
   try {
-    const { query, search } = req.query;
+    const { query, search, limit = 1000 } = req.query;
     const q = (query || search || '').trim().toLowerCase();
+    const maxLimit = Math.min(Math.max(1, parseInt(limit, 10) || 500), 2000);
 
     if (q) {
       const cleanNum = q.replace(/^0+/, '');
+      const safeCleanNum = escapeRegExp(cleanNum);
+      const safeQ = escapeRegExp(q);
+
       if (isMongoConnected()) {
-        let match = await Customer.findOne({ mrdNo: { $regex: new RegExp(`^0*${cleanNum}$`, 'i') } });
+        let match = await Customer.findOne({ mrdNo: { $regex: new RegExp(`^0*${safeCleanNum}$`, 'i') } }).lean();
         if (!match && q.length >= 7) {
-          match = await Customer.findOne({ phone: { $regex: new RegExp(q, 'i') } });
+          match = await Customer.findOne({ phone: { $regex: new RegExp(safeQ, 'i') } }).lean();
         }
         return res.json(match ? [match] : []);
       } else {
@@ -157,13 +166,16 @@ exports.getCustomers = async (req, res) => {
     }
 
     if (isMongoConnected()) {
-      const customers = await Customer.find().sort({ createdAt: -1 });
+      const customers = await Customer.find()
+        .sort({ createdAt: -1 })
+        .limit(maxLimit)
+        .lean();
       return res.json(customers);
     } else {
-      return res.json(inMemoryCustomers);
+      return res.json(inMemoryCustomers.slice(0, maxLimit));
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
